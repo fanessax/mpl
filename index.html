@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>PERBEKALIN</title>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+body{font-family:Arial;padding:20px}
+.hijau{color:green}.kuning{color:orange}.merah{color:red}
+.box{border:1px solid #ccc;padding:10px;margin:10px 0}
+</style>
+</head>
+<body>
+
+<h1>📦 PERBEKALIN</h1>
+
+<h3>Login</h3>
+<input id="email" placeholder="email"><button onclick="login()">Login</button>
+<p id="otp"></p>
+
+<h3>Tambah Barang</h3>
+<input id="nama" placeholder="nama">
+<input id="stok" type="number">
+<button onclick="tambah()">Tambah</button>
+
+<div id="list"></div>
+
+<h3>Chat</h3>
+<input id="msg"><button onclick="kirim()">Kirim</button>
+<div id="chat"></div>
+
+<script>
+const API="http://localhost:5000";
+const socket=io(API);
+
+function login(){
+ fetch(API+"/login",{method:"POST",headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({email:email.value})})
+ .then(r=>r.json()).then(d=>otp.innerText="OTP:"+d.otp);
+}
+
+function tambah(){
+ fetch(API+"/barang",{method:"POST",headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({nama:nama.value,stok:stok.value})})
+}
+
+socket.on("update-barang",data=>{
+ list.innerHTML="";
+ data.forEach(b=>{
+  let s=b.stok==0?"merah":b.stok<5?"kuning":"hijau";
+  list.innerHTML+=`<div class="box ${s}">${b.nama} - ${b.stok}</div>`;
+ })
+});
+
+function kirim(){
+ socket.emit("chat",msg.value);
+}
+
+socket.on("chat",m=>{
+ chat.innerHTML+=`<div>💬 ${m}</div>`;
+});
+</script>
+
+</body>
+</html>
