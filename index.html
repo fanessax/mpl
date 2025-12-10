@@ -1,64 +1,818 @@
-<!DOCTYPE html>
-<html>
-<head>
-<title>PERBEKALIN</title>
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<style>
-body{font-family:Arial;padding:20px}
-.hijau{color:green}.kuning{color:orange}.merah{color:red}
-.box{border:1px solid #ccc;padding:10px;margin:10px 0}
-</style>
-</head>
-<body>
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
+} from 'recharts';
+import { 
+  Package, ShoppingCart, AlertTriangle, FileText, User, Settings, 
+  LogOut, Plus, Trash2, Edit, Search, Camera, Download, Bell, 
+  Activity, CheckCircle, XCircle, Menu, Calendar, HelpCircle 
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInAnonymously, onAuthStateChanged, signOut, signInWithCustomToken 
+} from 'firebase/auth';
+import { 
+  getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp, query, orderBy 
+} from 'firebase/firestore';
 
-<h1>📦 PERBEKALIN</h1>
+// --- KONFIGURASI FIREBASE ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-<h3>Login</h3>
-<input id="email" placeholder="email"><button onclick="login()">Login</button>
-<p id="otp"></p>
+// --- UTILS & CONSTANTS ---
+const EMPLOYEE_CODE = "Perbekalin.43421";
+const THEME = {
+  primary: "bg-teal-400", // Hijau Aqua
+  primaryHover: "hover:bg-teal-500",
+  secondary: "bg-gray-100",
+  text: "text-black", // Times New Roman Black
+  danger: "bg-red-500",
+  warning: "bg-yellow-400",
+  success: "bg-green-500",
+};
 
-<h3>Tambah Barang</h3>
-<input id="nama" placeholder="nama">
-<input id="stok" type="number">
-<button onclick="tambah()">Tambah</button>
+// Fungsi Download CSV
+const downloadCSV = (data, filename) => {
+  if (!data || data.length === 0) {
+    alert("Tidak ada data untuk diunduh.");
+    return;
+  }
+  const headers = Object.keys(data[0]).join(",");
+  const rows = data.map(obj => Object.values(obj).map(val => `"${val}"`).join(","));
+  const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].join("\n");
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement("a");
+  link.setAttribute("href", encodedUri);
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
 
-<div id="list"></div>
+// --- KOMPONEN UTAMA ---
 
-<h3>Chat</h3>
-<input id="msg"><button onclick="kirim()">Kirim</button>
-<div id="chat"></div>
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('login'); // login, dashboard, inventory, requests, reports, history, stats, profile, manual
+  const [items, setItems] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [requests, setRequests] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [notifCount, setNotifCount] = useState(0);
 
-<script>
-const API="http://localhost:5000";
-const socket=io(API);
+  // Auth Init
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (u) {
+        // Cek localStorage untuk simulasi persistensi profil sederhana di sesi ini
+        const savedProfile = localStorage.getItem(`user_profile_${u.uid}`);
+        if (savedProfile) {
+          setUser(JSON.parse(savedProfile));
+          setView('dashboard');
+        } else {
+          // Jika user baru login anonim tanpa profil tersimpan, tetap di login screen
+          // atau set default user
+        }
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
-function login(){
- fetch(API+"/login",{method:"POST",headers:{'Content-Type':'application/json'},
- body:JSON.stringify({email:email.value})})
- .then(r=>r.json()).then(d=>otp.innerText="OTP:"+d.otp);
+  // Data Listeners
+  useEffect(() => {
+    if (!user) return;
+
+    // Items Listener
+    const itemsRef = collection(db, 'artifacts', appId, 'public', 'data', 'items');
+    const unsubItems = onSnapshot(itemsRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setItems(data);
+      
+      // Hitung stok menipis untuk notifikasi
+      const lowStock = data.filter(i => i.stock <= 5).length;
+      setNotifCount(prev => lowStock > 0 ? lowStock : 0); // Simplifikasi
+    }, (err) => console.error("Items Error:", err));
+
+    // Logs Listener
+    const logsRef = collection(db, 'artifacts', appId, 'public', 'data', 'logs');
+    const unsubLogs = onSnapshot(query(logsRef), (snapshot) => { // Harusnya orderBy tapi batasan Firestore tanpa index
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort manual desc
+      data.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+      setLogs(data);
+    }, (err) => console.error("Logs Error:", err));
+
+    // Requests Listener
+    const reqRef = collection(db, 'artifacts', appId, 'public', 'data', 'requests');
+    const unsubReq = onSnapshot(reqRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setRequests(data);
+    }, (err) => console.error("Req Error:", err));
+
+    // Reports Listener
+    const repRef = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+    const unsubRep = onSnapshot(repRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setReports(data);
+    }, (err) => console.error("Rep Error:", err));
+
+    return () => {
+      unsubItems();
+      unsubLogs();
+      unsubReq();
+      unsubRep();
+    };
+  }, [user]);
+
+  // --- ACTIONS ---
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    const email = e.target.email.value;
+    const password = e.target.password.value;
+    const code = e.target.code.value;
+
+    let role = 'user';
+    let name = email.split('@')[0] || 'Pengguna';
+
+    if (code === EMPLOYEE_CODE) {
+      role = 'karyawan';
+      name = 'Staff Logistik';
+    }
+
+    if ((email && password) || code === EMPLOYEE_CODE) {
+      const userData = { 
+        uid: auth.currentUser?.uid, 
+        email, 
+        name, 
+        role, 
+        photo: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + name,
+        jobTitle: role === 'karyawan' ? 'Staff Gudang' : 'Umum'
+      };
+      setUser(userData);
+      localStorage.setItem(`user_profile_${auth.currentUser?.uid}`, JSON.stringify(userData));
+      setView('dashboard');
+    } else {
+      alert("Masukkan Email/Password atau Kode Karyawan yang benar.");
+    }
+  };
+
+  const logAction = async (action, details) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), {
+      action,
+      details,
+      user: user.name,
+      timestamp: serverTimestamp(),
+      date: new Date().toLocaleDateString('id-ID')
+    });
+  };
+
+  const handleTakeItem = async (item) => {
+    if (item.stock <= 0) {
+      alert("Stok habis!");
+      return;
+    }
+    try {
+      const itemRef = doc(db, 'artifacts', appId, 'public', 'data', 'items', item.id);
+      await updateDoc(itemRef, { stock: item.stock - 1 });
+      await logAction("PENGAMBILAN", `Mengambil 1 unit ${item.name}`);
+      // Cek jika menipis setelah diambil
+      if (item.stock - 1 <= 5) {
+         // Auto create notif visual logic handled in useEffect
+      }
+    } catch (error) {
+      console.error("Error ambil barang:", error);
+      alert("Gagal mengambil barang. Coba lagi.");
+    }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-screen font-serif text-xl">Memuat PERBEKAL!N...</div>;
+
+  return (
+    <div className={`min-h-screen bg-gray-50 font-serif ${THEME.text}`}>
+      {!user ? (
+        <LoginScreen onLogin={handleLogin} />
+      ) : (
+        <div className="flex flex-col md:flex-row min-h-screen">
+          <Sidebar 
+            view={view} 
+            setView={setView} 
+            user={user} 
+            logout={() => { setUser(null); localStorage.removeItem(`user_profile_${auth.currentUser?.uid}`); }}
+            notifCount={notifCount}
+          />
+          <main className="flex-1 p-4 md:p-6 overflow-y-auto bg-gradient-to-br from-gray-50 to-gray-200">
+            {view === 'dashboard' && <Dashboard items={items} onTake={handleTakeItem} logs={logs} />}
+            {view === 'inventory' && <InventoryManager items={items} user={user} logAction={logAction} />}
+            {view === 'requests' && <RequestPurchase items={items} requests={requests} user={user} />}
+            {view === 'reports' && <ReportIssue reports={reports} user={user} />}
+            {view === 'history' && <ActivityHistory logs={logs} />}
+            {view === 'stats' && <Statistics items={items} logs={logs} />}
+            {view === 'profile' && <Profile user={user} setUser={setUser} />}
+            {view === 'manual' && <ManualGuide />}
+          </main>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function tambah(){
- fetch(API+"/barang",{method:"POST",headers:{'Content-Type':'application/json'},
- body:JSON.stringify({nama:nama.value,stok:stok.value})})
-}
+// --- SUB COMPONENTS ---
 
-socket.on("update-barang",data=>{
- list.innerHTML="";
- data.forEach(b=>{
-  let s=b.stok==0?"merah":b.stok<5?"kuning":"hijau";
-  list.innerHTML+=`<div class="box ${s}">${b.nama} - ${b.stok}</div>`;
- })
-});
+const LoginScreen = ({ onLogin }) => (
+  <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-teal-200 to-gray-200 p-4">
+    <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md border-t-8 border-teal-500">
+      <div className="flex flex-col items-center mb-6">
+        <Package size={48} className="text-teal-600 mb-2" />
+        <h1 className="text-4xl font-bold font-sans text-teal-700 tracking-tighter">PERBEKAL!N</h1>
+        <p className="text-gray-500 font-serif italic text-lg">Manajemen Logistik Mudah</p>
+      </div>
+      
+      <form onSubmit={onLogin} className="space-y-4">
+        <div>
+          <label className="block text-lg font-bold mb-1">Email</label>
+          <input type="email" name="email" className="w-full p-3 border-2 border-gray-300 rounded-lg text-lg" placeholder="contoh@email.com" />
+        </div>
+        <div>
+          <label className="block text-lg font-bold mb-1">Password</label>
+          <input type="password" name="password" className="w-full p-3 border-2 border-gray-300 rounded-lg text-lg" placeholder="******" />
+        </div>
+        
+        <div className="border-t border-gray-300 my-4 pt-4">
+          <label className="block text-lg font-bold mb-1 text-teal-800">Login Khusus Karyawan</label>
+          <input type="text" name="code" className="w-full p-3 border-2 border-teal-300 bg-teal-50 rounded-lg text-lg" placeholder="Masukkan Kode Rahasia" />
+        </div>
 
-function kirim(){
- socket.emit("chat",msg.value);
-}
+        <button type="submit" className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-4 rounded-lg text-xl shadow-lg transition transform hover:scale-105">
+          MASUK APLIKASI
+        </button>
+        
+        <div className="text-center mt-4">
+          <button type="button" onClick={() => alert("Fitur Login Google Tersedia (Simulasi)")} className="text-blue-600 underline text-lg">
+            Masuk dengan Google
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+);
 
-socket.on("chat",m=>{
- chat.innerHTML+=`<div>💬 ${m}</div>`;
-});
-</script>
+const Sidebar = ({ view, setView, user, logout, notifCount }) => {
+  const [isOpen, setIsOpen] = useState(false);
 
-</body>
-</html>
+  const menuItems = [
+    { id: 'dashboard', icon: Package, label: 'Dashboard Utama' },
+    { id: 'inventory', icon: FileText, label: 'Manajemen Barang' },
+    { id: 'requests', icon: ShoppingCart, label: 'Request Pembelian' },
+    { id: 'reports', icon: AlertTriangle, label: 'Lapor Masalah' },
+    { id: 'history', icon: Activity, label: 'Catatan Aktivitas' },
+    { id: 'stats', icon: Activity, label: 'Statistik' },
+    { id: 'manual', icon: HelpCircle, label: 'Panduan Manual' },
+    { id: 'profile', icon: User, label: 'Profil Saya' },
+  ];
+
+  return (
+    <>
+      {/* Mobile Header */}
+      <div className="md:hidden bg-teal-600 text-white p-4 flex justify-between items-center shadow-md">
+        <h1 className="text-2xl font-bold font-sans">PERBEKAL!N</h1>
+        <button onClick={() => setIsOpen(!isOpen)}><Menu size={32} /></button>
+      </div>
+
+      {/* Sidebar Content */}
+      <div className={`${isOpen ? 'block' : 'hidden'} md:block w-full md:w-72 bg-white shadow-xl flex-shrink-0 min-h-screen z-10 transition-all`}>
+        <div className="p-6 bg-teal-500 text-white hidden md:block">
+           <h1 className="text-3xl font-bold font-sans tracking-tight">PERBEKAL!N</h1>
+           <p className="text-sm opacity-90 mt-1">Halo, {user.name}</p>
+        </div>
+
+        <nav className="p-2 md:p-4 space-y-2">
+          {menuItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => { setView(item.id); setIsOpen(false); }}
+              className={`w-full flex items-center p-4 rounded-lg text-lg transition-colors ${view === item.id ? 'bg-teal-100 text-teal-900 font-bold border-l-4 border-teal-600' : 'hover:bg-gray-100 text-gray-700'}`}
+            >
+              <item.icon className="mr-3" size={24} />
+              {item.label}
+              {item.id === 'requests' && notifCount > 0 && (
+                <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full animate-pulse">{notifCount}</span>
+              )}
+            </button>
+          ))}
+          
+          <button onClick={logout} className="w-full flex items-center p-4 rounded-lg text-lg text-red-600 hover:bg-red-50 mt-8 font-bold border-t border-gray-200">
+            <LogOut className="mr-3" size={24} />
+            Keluar Aplikasi
+          </button>
+        </nav>
+      </div>
+    </>
+  );
+};
+
+// --- FEATURE COMPONENTS ---
+
+const Dashboard = ({ items, onTake }) => {
+  const [filter, setFilter] = useState('');
+
+  const filteredItems = items.filter(item => 
+    item.name.toLowerCase().includes(filter.toLowerCase()) || 
+    (item.category || '').toLowerCase().includes(filter.toLowerCase())
+  );
+
+  const getStatusColor = (stock) => {
+    if (stock <= 0) return 'bg-red-500 border-red-700'; // Habis
+    if (stock <= 5) return 'bg-yellow-400 border-yellow-600'; // Hampir Habis
+    return 'bg-green-500 border-green-700'; // Tersedia
+  };
+
+  const getStatusText = (stock) => {
+    if (stock <= 0) return 'HABIS';
+    if (stock <= 5) return 'MENIPIS';
+    return 'TERSEDIA';
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-xl shadow-sm border-l-8 border-teal-500">
+        <div>
+          <h2 className="text-3xl font-bold mb-2">Dashboard Stok</h2>
+          <p className="text-gray-600 text-lg">Pilih barang yang ingin diambil.</p>
+        </div>
+        <div className="mt-4 md:mt-0 w-full md:w-1/2 relative">
+          <Search className="absolute left-4 top-4 text-gray-400" size={24} />
+          <input 
+            type="text" 
+            placeholder="Cari nama barang, merek, atau kategori..." 
+            className="w-full pl-12 p-4 rounded-full border-2 border-gray-300 focus:border-teal-500 text-lg shadow-inner"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredItems.map(item => (
+          <div key={item.id} className="bg-white rounded-xl shadow-lg overflow-hidden flex flex-col hover:shadow-2xl transition-shadow border border-gray-200">
+            <div className="h-48 bg-gray-200 relative">
+              {item.image ? (
+                <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-gray-400">
+                  <Package size={64} />
+                </div>
+              )}
+              <div className={`absolute top-4 right-4 px-4 py-2 rounded-full text-white font-bold text-sm shadow-md border-b-4 ${getStatusColor(item.stock)}`}>
+                {getStatusText(item.stock)}
+              </div>
+            </div>
+            
+            <div className="p-6 flex-1 flex flex-col">
+              <h3 className="text-2xl font-bold mb-2">{item.name}</h3>
+              <p className="text-gray-600 mb-4 line-clamp-2">{item.description || "Tidak ada deskripsi."}</p>
+              
+              <div className="grid grid-cols-2 gap-2 text-sm text-gray-500 mb-4">
+                <div>Stok: <span className="font-bold text-black text-lg">{item.stock}</span> {item.unit}</div>
+                <div>Rak: {item.location || 'A-1'}</div>
+              </div>
+
+              <button 
+                onClick={() => onTake(item)}
+                disabled={item.stock <= 0}
+                className={`mt-auto w-full py-4 rounded-lg font-bold text-xl shadow-md transition-transform active:scale-95 flex items-center justify-center ${item.stock > 0 ? 'bg-teal-600 text-white hover:bg-teal-700' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
+              >
+                <Download className="mr-2" />
+                AMBIL BARANG
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const InventoryManager = ({ items, user, logAction }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentItem, setCurrentItem] = useState(null);
+  
+  // State form
+  const [formData, setFormData] = useState({
+    name: '', stock: 0, price: 0, category: '', unit: 'pcs', description: '', image: ''
+  });
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    try {
+      if (currentItem) {
+        // Edit Mode
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'items', currentItem.id);
+        await updateDoc(docRef, {
+          ...formData,
+          lastEditedBy: user.name,
+          lastEditedAt: serverTimestamp()
+        });
+        await logAction("EDIT BARANG", `Mengubah data barang: ${formData.name}`);
+      } else {
+        // Add Mode
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'items'), {
+          ...formData,
+          lastEditedBy: user.name,
+          lastEditedAt: serverTimestamp(),
+          createdAt: serverTimestamp()
+        });
+        await logAction("TAMBAH BARANG", `Menambah barang baru: ${formData.name}`);
+      }
+      setIsEditing(false);
+      setCurrentItem(null);
+      setFormData({ name: '', stock: 0, price: 0, category: '', unit: 'pcs', description: '', image: '' });
+      alert("Data berhasil disimpan!");
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menyimpan data.");
+    }
+  };
+
+  const handleDelete = async (id, name) => {
+    if (confirm(`Yakin ingin menghapus ${name}? Tindakan ini tidak bisa dibatalkan.`)) {
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'items', id));
+        await logAction("HAPUS BARANG", `Menghapus barang: ${name}`);
+      } catch (err) {
+        alert("Gagal menghapus.");
+      }
+    }
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setFormData({ ...formData, image: reader.result });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-3xl font-bold">Manajemen Barang</h2>
+        <button 
+          onClick={() => { setIsEditing(true); setCurrentItem(null); setFormData({ name: '', stock: 0, price: 0, category: '', unit: 'pcs', description: '', image: '' }); }}
+          className="bg-teal-600 text-white px-6 py-3 rounded-lg font-bold flex items-center hover:bg-teal-700 shadow-md"
+        >
+          <Plus className="mr-2" /> Tambah Barang
+        </button>
+      </div>
+
+      {isEditing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-teal-50 rounded-t-xl">
+              <h3 className="text-2xl font-bold">{currentItem ? 'Edit Barang' : 'Tambah Barang Baru'}</h3>
+              <button onClick={() => setIsEditing(false)}><XCircle size={32} className="text-red-500 hover:text-red-700"/></button>
+            </div>
+            <form onSubmit={handleSave} className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block font-bold mb-1">Nama Barang</label>
+                  <input required type="text" className="w-full p-2 border rounded text-lg" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Kategori</label>
+                  <select className="w-full p-2 border rounded text-lg" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})}>
+                    <option value="">Pilih Kategori</option>
+                    <option value="ATK">ATK</option>
+                    <option value="Elektronik">Elektronik</option>
+                    <option value="Pembersih">Pembersih</option>
+                    <option value="Konsumsi">Konsumsi</option>
+                    <option value="Lainnya">Lainnya</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Jumlah Stok</label>
+                  <input required type="number" className="w-full p-2 border rounded text-lg" value={formData.stock} onChange={e => setFormData({...formData, stock: parseInt(e.target.value)})} />
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Satuan</label>
+                  <input required type="text" className="w-full p-2 border rounded text-lg" value={formData.unit} onChange={e => setFormData({...formData, unit: e.target.value})} />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block font-bold mb-1">Deskripsi</label>
+                <textarea className="w-full p-2 border rounded text-lg" rows="3" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})}></textarea>
+              </div>
+
+              <div>
+                <label className="block font-bold mb-1">Upload Foto (File/Kamera)</label>
+                <div className="flex items-center space-x-4">
+                  <label className="cursor-pointer bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded flex items-center">
+                    <Camera className="mr-2"/> Pilih/Ambil Foto
+                    <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageUpload} />
+                  </label>
+                  {formData.image && <img src={formData.image} alt="Preview" className="h-16 w-16 object-cover rounded border" />}
+                </div>
+              </div>
+
+              <div className="pt-4 flex space-x-4">
+                <button type="submit" className="flex-1 bg-green-600 text-white py-3 rounded-lg font-bold text-xl hover:bg-green-700 shadow">SIMPAN</button>
+                <button type="button" onClick={() => setIsEditing(false)} className="flex-1 bg-gray-500 text-white py-3 rounded-lg font-bold text-xl hover:bg-gray-600 shadow">BATAL</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* List Table View for Management */}
+      <div className="bg-white rounded-xl shadow overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-teal-100 text-teal-900">
+            <tr>
+              <th className="p-4 border-b font-bold text-lg">Gambar</th>
+              <th className="p-4 border-b font-bold text-lg">Nama Barang</th>
+              <th className="p-4 border-b font-bold text-lg">Stok</th>
+              <th className="p-4 border-b font-bold text-lg">Kategori</th>
+              <th className="p-4 border-b font-bold text-lg">Terakhir Edit</th>
+              <th className="p-4 border-b font-bold text-lg text-center">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, idx) => (
+              <tr key={item.id} className={`hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                <td className="p-4 border-b">
+                   <img src={item.image || 'https://via.placeholder.com/50'} alt="mini" className="w-12 h-12 object-cover rounded" />
+                </td>
+                <td className="p-4 border-b font-bold">{item.name}</td>
+                <td className="p-4 border-b text-lg">
+                  <span className={`px-2 py-1 rounded ${item.stock <= 5 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
+                    {item.stock} {item.unit}
+                  </span>
+                </td>
+                <td className="p-4 border-b">{item.category}</td>
+                <td className="p-4 border-b text-sm text-gray-500">
+                  {item.lastEditedBy}<br/>
+                  {item.lastEditedAt ? new Date(item.lastEditedAt.seconds * 1000).toLocaleTimeString() : '-'}
+                </td>
+                <td className="p-4 border-b text-center space-x-2">
+                  <button onClick={() => { setCurrentItem(item); setFormData(item); setIsEditing(true); }} className="text-blue-600 hover:text-blue-800 p-2"><Edit /></button>
+                  <button onClick={() => handleDelete(item.id, item.name)} className="text-red-600 hover:text-red-800 p-2"><Trash2 /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const RequestPurchase = ({ items, requests, user }) => {
+  const [selectedItem, setSelectedItem] = useState('');
+  const [reason, setReason] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedItem) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'requests'), {
+        itemName: selectedItem,
+        requester: user.name,
+        reason,
+        status: 'Menunggu',
+        timestamp: serverTimestamp(),
+        date: new Date().toLocaleDateString('id-ID')
+      });
+      alert("Permintaan terkirim! (Bunyi: TINTUNG 🎵)");
+      setSelectedItem('');
+      setReason('');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-3xl font-bold flex items-center"><ShoppingCart className="mr-3"/> Request Pembelian</h2>
+      
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Form Request */}
+        <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg border-t-4 border-teal-500 h-fit">
+          <h3 className="text-xl font-bold mb-4">Buat Permintaan Baru</h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block font-bold mb-1">Pilih Barang (Stok Menipis)</label>
+              <select className="w-full p-3 border rounded-lg text-lg bg-white" value={selectedItem} onChange={e => setSelectedItem(e.target.value)} required>
+                <option value="">-- Pilih Barang --</option>
+                {items.map(i => (
+                  <option key={i.id} value={i.name}>{i.name} (Sisa: {i.stock})</option>
+                ))}
+                <option value="Barang Baru">Barang Baru (Tulis di deskripsi)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block font-bold mb-1">Alasan / Catatan</label>
+              <textarea required className="w-full p-3 border rounded-lg text-lg" rows="3" value={reason} onChange={e => setReason(e.target.value)} placeholder="Contoh: Stok habis, dibutuhkan segera."></textarea>
+            </div>
+            <button type="submit" className="w-full bg-teal-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-teal-700">Kirim Permintaan</button>
+          </form>
+        </div>
+
+        {/* List Request */}
+        <div className="lg:col-span-2 space-y-4">
+          <h3 className="text-xl font-bold">Daftar Permintaan Masuk</h3>
+          {requests.length === 0 ? (
+            <p className="text-gray-500 italic">Belum ada permintaan.</p>
+          ) : (
+            requests.map(req => (
+              <div key={req.id} className="bg-white p-4 rounded-lg shadow border-l-4 border-blue-500 flex justify-between items-center animate-in fade-in slide-in-from-bottom-2">
+                <div>
+                  <h4 className="font-bold text-lg text-blue-900">{req.itemName}</h4>
+                  <p className="text-gray-600">Oleh: {req.requester} | {req.date}</p>
+                  <p className="text-sm italic text-gray-500">"{req.reason}"</p>
+                </div>
+                <div className="text-right">
+                  <span className={`px-3 py-1 rounded-full text-sm font-bold ${req.status === 'Selesai' ? 'bg-green-200 text-green-800' : 'bg-yellow-200 text-yellow-800'}`}>
+                    {req.status}
+                  </span>
+                  {user.role === 'karyawan' && req.status !== 'Selesai' && (
+                     <button onClick={async () => {
+                       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'requests', req.id), { status: 'Selesai' });
+                     }} className="block mt-2 text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600">
+                       Tandai Selesai
+                     </button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ReportIssue = ({ reports, user }) => {
+  const [desc, setDesc] = useState('');
+  
+  const handleReport = async (e) => {
+    e.preventDefault();
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'reports'), {
+        description: desc,
+        reporter: user.name,
+        status: 'Open',
+        timestamp: serverTimestamp(),
+        date: new Date().toLocaleDateString('id-ID')
+      });
+      alert("Laporan terkirim.");
+      setDesc('');
+    } catch(e) { console.error(e); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-3xl font-bold text-red-600 flex items-center"><AlertTriangle className="mr-3"/> Lapor Masalah</h2>
+      <div className="bg-white p-6 rounded-xl shadow-md">
+        <form onSubmit={handleReport}>
+          <label className="block font-bold mb-2 text-lg">Deskripsikan Masalah / Error / Kerusakan Barang</label>
+          <textarea required className="w-full p-4 border-2 border-red-200 rounded-xl text-lg mb-4" rows="4" placeholder="Contoh: Stok spidol tidak sesuai fisik, atau kursi di ruang meeting patah..." value={desc} onChange={e => setDesc(e.target.value)}></textarea>
+          <button className="bg-red-600 text-white px-8 py-3 rounded-lg font-bold text-lg hover:bg-red-700">Kirim Laporan</button>
+        </form>
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="text-xl font-bold">Riwayat Laporan</h3>
+        {reports.map(rep => (
+          <div key={rep.id} className="bg-gray-50 p-4 rounded border border-gray-200">
+            <div className="flex justify-between">
+               <span className="font-bold">{rep.reporter} - {rep.date}</span>
+               <span className="text-sm font-mono bg-gray-200 px-2 rounded">{rep.status}</span>
+            </div>
+            <p className="mt-2 text-gray-700">{rep.description}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ActivityHistory = ({ logs }) => {
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center mb-4">
+         <h2 className="text-3xl font-bold">Catatan Aktivitas</h2>
+         <button onClick={() => downloadCSV(logs, "riwayat_aktivitas.csv")} className="bg-green-600 text-white px-4 py-2 rounded flex items-center hover:bg-green-700">
+            <Download className="mr-2" size={20} /> Download Excel
+         </button>
+      </div>
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-left">
+           <thead className="bg-gray-100 border-b-2 border-gray-300">
+             <tr>
+               <th className="p-4 font-bold text-lg w-40">Tanggal</th>
+               <th className="p-4 font-bold text-lg w-40">Pengguna</th>
+               <th className="p-4 font-bold text-lg w-40">Aksi</th>
+               <th className="p-4 font-bold text-lg">Detail</th>
+             </tr>
+           </thead>
+           <tbody className="divide-y divide-gray-100">
+             {logs.map((log, i) => (
+               <tr key={i} className="hover:bg-gray-50">
+                 <td className="p-4 text-gray-600 font-mono text-sm">{log.date}</td>
+                 <td className="p-4 font-bold">{log.user}</td>
+                 <td className="p-4"><span className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-sm font-bold">{log.action}</span></td>
+                 <td className="p-4 text-gray-700">{log.details}</td>
+               </tr>
+             ))}
+           </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const Statistics = ({ items, logs }) => {
+  // Simple data processing for chart
+  const usageData = items.map(i => ({
+     name: i.name,
+     stok: i.stock,
+     penggunaan: Math.floor(Math.random() * 20) // Mock data for demo since logs aggregation is complex in client-side only
+  })).slice(0, 5);
+
+  return (
+    <div className="space-y-8">
+      <h2 className="text-3xl font-bold">Statistik & Analisa</h2>
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-teal-500">
+          <h3 className="text-xl font-bold mb-4 text-center">Stok Barang Terkini</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={usageData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" fontSize={12} interval={0} angle={-15} textAnchor="end" />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="stok" fill="#2dd4bf" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="mt-4 text-sm text-gray-600 bg-gray-100 p-3 rounded">
+            <strong>Interpretasi:</strong> Grafik menunjukkan 5 barang teratas. Pastikan barang dengan batang rendah segera di-restock.
+          </p>
+        </div>
+
+        <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-teal-500">
+           <h3 className="text-xl font-bold mb-4 text-center">Tren Penggunaan Bulanan (Simulasi)</h3>
+           <div className="h-64">
+             <ResponsiveContainer width="100%" height="100%">
+               <LineChart data={[
+                 {name: 'Jan', ambil: 40}, {name: 'Feb', ambil: 30}, {name: 'Mar', ambil: 60}, {name: 'Apr', ambil: 45}
+               ]}>
+                 <CartesianGrid strokeDasharray="3 3" />
+                 <XAxis dataKey="name" />
+                 <YAxis />
+                 <Tooltip />
+                 <Line type="monotone" dataKey="ambil" stroke="#0d9488" strokeWidth={3} />
+               </LineChart>
+             </ResponsiveContainer>
+           </div>
+           <p className="mt-4 text-sm text-gray-600 bg-gray-100 p-3 rounded">
+            <strong>Interpretasi:</strong> Lonjakan penggunaan terjadi di bulan Maret. Persiapkan stok lebih banyak di periode tersebut.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Profile = ({ user, setUser }) => {
+  return (
+    <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow-2xl border-t-8 border-teal-500">
+      <div className="flex flex-col items-center">
+        <img src={user.photo} alt="Profile" className="w-32 h-32 rounded-full border-4 border-teal-200 mb-4 bg-gray-100" />
+        <h2 className="text-3xl font-bold">{user.name}</h2>
+        <span className="bg-teal-100 text-teal-800 px-4 py-1 rounded-full text-sm font-bold mt-2 uppercase">{user.role}</span>
+        <p className="text-gray-500 mt-2 text-lg">{user.jobTitle}</p>
+      </div>
+
+
+      <div className="mt-8 space-y-4">
+        <div className="bg
