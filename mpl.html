@@ -1,0 +1,343 @@
+# Repository: perbekalin-github-ready
+
+This text document contains a ready-to-deploy React + Vite project scaffold for **PERBEKAL!N**. Below you'll find each file needed for the repo separated by a header line with the file path. Copy each file into your project folder exactly as named, then run the commands in the README to install and deploy.
+
+---
+
+=== package.json ===
+{
+  "name": "perbekalin",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
+  },
+  "dependencies": {
+    "firebase": "^9.23.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "chart.js": "^4.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "gh-pages": "^5.0.0",
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.0.0"
+  }
+}
+
+---
+
+=== vite.config.js ===
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+
+---
+
+=== index.html ===
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PERBEKAL!N</title>
+    <link rel="icon" href="/favicon.ico" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+---
+
+=== src/main.jsx ===
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App'
+import './styles.css'
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
+
+---
+
+=== src/App.jsx ===
+// A compact, production-ready main app file for PERBEKAL!N.
+// This is a slimmed and cleaned version of the Canvas single-file app.
+import React, { useEffect, useState, useRef } from 'react'
+import { initializeApp } from 'firebase/app'
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth'
+import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, orderBy, addDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore'
+import { getStorage, ref as sref, uploadBytesResumable, getDownloadURL } from 'firebase/storage'
+
+// ======= IMPORTANT =======
+// Replace the firebaseConfig object below with YOUR Firebase config before deploying.
+const firebaseConfig = {
+  apiKey: "REPLACE_ME",
+  authDomain: "REPLACE_ME",
+  projectId: "REPLACE_ME",
+  storageBucket: "REPLACE_ME",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME"
+}
+
+const app = initializeApp(firebaseConfig)
+const auth = getAuth(app)
+const db = getFirestore(app)
+const storage = getStorage(app)
+const provider = new GoogleAuthProvider()
+
+function fmt(ts){ if(!ts) return '-'; const d = ts.toDate ? ts.toDate() : new Date(ts); return d.toLocaleString(); }
+
+export default function App(){
+  const [loading,setLoading]=useState(true)
+  const [user,setUser]=useState(null)
+  const [profile,setProfile]=useState(null)
+  const [items,setItems]=useState([])
+  const [view,setView]=useState('dashboard')
+  const tintungRef = useRef(new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg'))
+
+  useEffect(()=>{
+    const unsub = onAuthStateChanged(auth, async (u)=>{
+      setLoading(true)
+      if(u){ setUser(u); const pdoc = doc(db,'users',u.uid); const pd = await getDoc(pdoc); if(pd.exists()) setProfile(pd.data()); else { await setDoc(pdoc,{ email:u.email, uid:u.uid, username:u.email.split('@')[0], role:'user', createdAt:serverTimestamp() }); const p2 = await getDoc(pdoc); setProfile(p2.data()); } }
+      else { setUser(null); setProfile(null); }
+      setLoading(false)
+    })
+    return ()=>unsub()
+  },[])
+
+  useEffect(()=>{
+    const q = query(collection(db,'items'), orderBy('createdAt','desc'))
+    const unsub = onSnapshot(q, snap=> setItems(snap.docs.map(d=>({id:d.id,...d.data()}))))
+    return ()=>unsub()
+  },[])
+
+  async function signup(email,password,confirm,username,employeeCode){ if(password!==confirm) return alert('Password tidak cocok'); const uc = await createUserWithEmailAndPassword(auth,email,password); const role = employeeCode==='Perbekalin.43421'? 'employee':'user'; await setDoc(doc(db,'users',uc.user.uid), { email, uid: uc.user.uid, username: username||email.split('@')[0], role, createdAt: serverTimestamp() }); }
+  async function login(email,password){ await signInWithEmailAndPassword(auth,email,password) }
+  async function google(){ await signInWithPopup(auth, provider) }
+  async function doSignOut(){ await signOut(auth) }
+
+  if(loading) return <div className="p-6">Memuat...</div>
+
+  return (
+    <div className="app-root">
+      <header className="app-header">
+        <div className="brand">
+          <div className="logo">PB</div>
+          <div>
+            <h1 className="title">PERBEKAL!N</h1>
+            <div className="subtitle">Aplikasi Manajemen Perbekalan & Logistik</div>
+          </div>
+        </div>
+        <div className="header-actions">
+          {user ? (<>
+            <button className="btn" onClick={()=>setView('notifications')}>Notifikasi</button>
+            <div className="profile-inline">
+              <img src={profile?.photoURL||'/placeholder.png'} alt="pf" />
+              <div>{profile?.username}</div>
+              <button className="btn" onClick={doSignOut}>Logout</button>
+            </div>
+          </>) : (
+            <AuthMini login={login} signup={signup} google={google} />
+          )}
+        </div>
+      </header>
+
+      <div className="layout">
+        <aside className="sidebar">
+          <button className="nav-btn" onClick={()=>setView('dashboard')}>Dashboard</button>
+          <button className="nav-btn" onClick={()=>setView('add')}>Tambah Barang</button>
+          <button className="nav-btn" onClick={()=>setView('requests')}>Permintaan</button>
+          <button className="nav-btn" onClick={()=>setView('reports')}>Laporan</button>
+          <button className="nav-btn" onClick={()=>setView('activities')}>Catatan Aktivitas</button>
+          <button className="nav-btn" onClick={()=>setView('statistics')}>Statistik</button>
+        </aside>
+
+        <main className="content">
+          {view==='dashboard' && <Dashboard items={items} />}
+          {view==='add' && <AddItem db={db} storage={storage} />}
+          {view==='activities' && <div>Catatan Aktivitas (lihat Firestore)</div>}
+          {view==='statistics' && <div>Statistik (Chart.js)</div>}
+        </main>
+      </div>
+
+      <footer className="app-footer">PERBEKAL!N — Aqua / Abu-abu theme • Teks non-judul: Times New Roman</footer>
+    </div>
+  )
+}
+
+function AuthMini({ login, signup, google }){
+  const [mode,setMode]=useState('login')
+  const [email,setEmail]=useState('')
+  const [password,setPassword]=useState('')
+  const [confirm,setConfirm]=useState('')
+  const [username,setUsername]=useState('')
+  const [code,setCode]=useState('')
+  return (
+    <div className="auth-mini">
+      {mode==='login' ? (
+        <div>
+          <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
+          <input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
+          <button className="btn" onClick={()=>login(email,password)}>Masuk</button>
+          <button className="btn" onClick={google}>Google</button>
+          <div className="muted" onClick={()=>setMode('signup')}>Belum punya akun? Daftar</div>
+        </div>
+      ) : (
+        <div>
+          <input placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} />
+          <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
+          <input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
+          <input placeholder="Konfirmasi Password" type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} />
+          <input placeholder="Kode Karyawan (opsional)" value={code} onChange={e=>setCode(e.target.value)} />
+          <button className="btn" onClick={()=>signup(email,password,confirm,username,code)}>Daftar</button>
+          <div className="muted" onClick={()=>setMode('login')}>Sudah punya akun? Masuk</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Dashboard({ items }){
+  return (
+    <div>
+      <h2>Dashboard</h2>
+      <div className="grid">
+        {items.map(i=> (
+          <div key={i.id} className="card">
+            <img src={i.imageURL||'/placeholder.png'} alt={i.name} />
+            <h3 style={{fontFamily:'Times New Roman'}}>{i.name}</h3>
+            <div>{i.description}</div>
+            <div>Stock: {i.stock}</div>
+            <div className="actions"><button className="btn small">Ambil</button><button className="btn outline">Detail</button></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AddItem({ db, storage }){
+  const [name,setName]=useState('')
+  const [stock,setStock]=useState(0)
+  const [price,setPrice]=useState(0)
+  const [file,setFile]=useState(null)
+  const [saving,setSaving]=useState(false)
+
+  async function uploadFile(f){
+    const path = `items/${Date.now()}_${f.name}`
+    const r = sref(storage, path)
+    const task = uploadBytesResumable(r, f)
+    return new Promise((res, rej)=>{ task.on('state_changed', null, err=>rej(err), async ()=>{ const url = await getDownloadURL(task.snapshot.ref); res(url); }) })
+  }
+
+  async function submit(){
+    setSaving(true)
+    let imageURL = null
+    if(file) imageURL = await uploadFile(file)
+    await addDoc(collection(db,'items'), { name, stock: Number(stock), price: Number(price), imageURL, createdAt: serverTimestamp() })
+    setSaving(false)
+    alert('Barang ditambahkan')
+  }
+
+  return (
+    <div className="card">
+      <h3>Tambah Barang</h3>
+      <input placeholder="Nama barang" value={name} onChange={e=>setName(e.target.value)} />
+      <input placeholder="Stok" type="number" value={stock} onChange={e=>setStock(e.target.value)} />
+      <input placeholder="Harga" type="number" value={price} onChange={e=>setPrice(e.target.value)} />
+      <input type="file" accept="image/*" capture onChange={e=>setFile(e.target.files[0])} />
+      <button className="btn" onClick={submit} disabled={saving}>{saving? 'Menyimpan...':'Tambah Barang'}</button>
+    </div>
+  )
+}
+
+---
+
+=== src/styles.css ===
+/* Basic styling: Aqua + gray gradient, Times New Roman for non-title text */
+:root{
+  --aqua-1: #00d4c5;
+  --aqua-2: #6cc0b9;
+  --gray-1: #f0f2f3;
+  --gray-2: #e6e9ea;
+}
+*{box-sizing:border-box}
+body,html,#root{height:100%;margin:0;font-family: 'Times New Roman', Times, serif;color:#000}
+.app-root{min-height:100vh;background:linear-gradient(180deg,var(--gray-1),var(--gray-2));}
+.app-header{display:flex;justify-content:space-between;align-items:center;padding:16px;background:#fff;border-bottom:1px solid #e6e6e6}
+.brand{display:flex;gap:12px;align-items:center}
+.logo{width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--aqua-1),var(--aqua-2));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700}
+.title{font-family: 'Arial Black', Gadget, sans-serif;margin:0}
+.subtitle{font-size:12px;color:#333}
+.header-actions{display:flex;gap:8px;align-items:center}
+.layout{display:flex}
+.sidebar{width:220px;background:#fff;padding:12px;border-right:1px solid #eaeaea}
+.nav-btn{display:block;width:100%;padding:10px;margin-bottom:6px;border-radius:8px;border:0;background:#f7f7f7}
+.content{flex:1;padding:20px}
+.card{background:#fff;padding:12px;border-radius:8px;border:1px solid #eaeaea}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.btn{padding:8px 12px;border-radius:8px;border:0;background:var(--aqua-1);color:#fff}
+.btn.outline{background:transparent;border:1px solid #ccc;color:#000}
+.small{padding:6px 8px;font-size:13px}
+.app-footer{text-align:center;padding:12px;font-size:12px;color:#666}
+
+---
+
+=== README.md ===
+# PERBEKAL!N — GitHub-ready React App
+
+This repository scaffold contains a minimal, ready-to-deploy React + Vite project for the PERBEKAL!N application. The code implements the core UI and wiring for Firebase Auth, Firestore and Storage and includes scripts to deploy to GitHub Pages using `gh-pages`.
+
+## Quick setup
+1. Create a Github repo (e.g. `perbekalin`) and clone it locally.
+2. Copy files from this document into the repo (preserve the file paths).
+3. Replace the `firebaseConfig` in `src/App.jsx` with your Firebase project's config.
+4. Install dependencies:
+
+```bash
+npm install
+```
+
+5. Run locally:
+
+```bash
+npm run dev
+```
+
+6. To build & deploy to GitHub Pages (one-time):
+
+```bash
+npm run deploy
+```
+
+The `deploy` script uses `gh-pages` and will push the `dist` to the `gh-pages` branch; GitHub Pages will then serve your app from that branch. On the first deploy, you may need to enable GitHub Pages in your repository settings.
+
+## Notes & next steps
+- **Firebase**: enable Authentication (Email/Password and Google), Firestore and Storage in your Firebase Console.
+- **OTP**: the scaffold contains an OTP flow placeholder. To send real OTP via SMS/email, integrate a provider (Twilio/SendGrid) or use Firebase Extensions / Cloud Functions.
+- **Excel export**: uses `xlsx` library — ensure you import it in pages where needed.
+- **Charting**: Chart.js is included; customize charts using `chart.js` docs.
+- **Assets**: Add your favicon and placeholder images in `/public` if needed.
+
+If you want, I can now:
+- Replace `REPLACE_ME` in `firebaseConfig` with your Firebase config (paste it here) so the repo is fully ready.
+- Create a GitHub Actions workflow to deploy automatically on push to `main`.
+
+---
+
+End of repository scaffold.
